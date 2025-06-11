@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Roostr</title>
+	<!-- Tailwind CSS CDN -->
+	<script src="https://cdn.tailwindcss.com"></script>
+	<!-- React CDN -->
+	<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+	<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+	<!-- Babel CDN for JSX transformation in the browser -->
+	<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+	<style>
+		/* Custom styles for the app */
+		@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+		html {
+			scroll-behavior: smooth;
+		}
+		body {
+			font-family: 'Inter', sans-serif;
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+			background-color: #111827; /* bg-gray-900 */
+		}
+		/* Masonry layout for media grid */
+		.media-grid {
+			column-gap: 1rem;
+			padding: 20px;
+			column-count: 1;
+		}
+        @media (min-width: 768px) { .media-grid { column-count: 2; } }
+        @media (min-width: 1024px) { .media-grid { column-count: 3; } }
+
+		.media-item {
+			border-radius: 0.75rem;
+			overflow: hidden;
+			box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
+			position: relative;
+			cursor: pointer;
+			transition: box-shadow 0.2s ease-in-out;
+            break-inside: avoid;
+            margin-bottom: 1rem;
+			border: 1px solid #374151; /* border-gray-700 */
+		}
+		.media-item.selected {
+			box-shadow: 0 0 0 4px #3B82F6;
+		}
+		.media-item img, .media-item video {
+			width: 100%;
+			height: auto;
+			display: block;
+            border-radius: 0.5rem;
+		}
+		.media-item .file-name {
+			position: absolute;
+			bottom: 0;
+			left: 0;
+			right: 0;
+			background: rgba(0, 0, 0, 0.6);
+			color: white;
+			padding: 8px;
+			font-size: 0.875rem;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+		.media-item .play-icon {
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			transform: translate(-50%, -50%);
+			background: rgba(0, 0, 0, 0.7);
+			border-radius: 50%;
+			padding: 10px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			opacity: 0.9;
+			transition: opacity 0.2s ease-in-out;
+			pointer-events: auto;
+		}
+		.media-item:hover .play-icon {
+			opacity: 1;
+		}
+		@keyframes spin {
+			0% { transform: rotate(0deg); }
+			100% { transform: rotate(360deg); }
+		}
+		.spinner {
+			border: 4px solid rgba(255, 255, 255, 0.1);
+			border-top: 4px solid #3B82F6;
+			border-radius: 50%;
+			width: 30px;
+			height: 30px;
+			animation: spin 1s linear infinite;
+		}
+
+		.modal-overlay {
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.9);
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			z-index: 1000;
+		}
+		.modal-content {
+			background-color: #1f2937; /* bg-gray-800 */
+			padding: 20px;
+			overflow-y: auto;
+			position: relative;
+			border: 1px solid #4b5563; /* border-gray-600 */
+		}
+		/* Tab styles */
+		.tab-button {
+			padding: 0.75rem 1.5rem;
+			border-radius: 0.5rem;
+			font-weight: 500;
+			color: #d1d5db; /* text-gray-300 */
+			background-color: #374151; /* bg-gray-700 */
+			transition: all 0.2s ease-in-out;
+			cursor: pointer;
+		}
+		.tab-button.active {
+			background-color: #3B82F6;
+			color: white;
+			box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+		}
+		.tab-button:hover:not(.active) {
+			background-color: #4b5563; /* bg-gray-600 */
+		}
+        .break-inside-avoid {
+            break-inside: avoid;
+        }
+	</style>
+</head>
+<body>
+	<div id="root"></div>
+
+	<script type="text/babel">
+		const { useState, useEffect, useRef, useCallback } = React;
+		const ReactDOM = window.ReactDOM;
+
+		const CollageDisplay = ({ selectedItems, onBack, onAddMore, onRemoveItem, isPaused }) => {
+			const [audibleVideoId, setAudibleVideoId] = useState(null);
+            const [controlsVisibleId, setControlsVisibleId] = useState(null);
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [layoutItems, setLayoutItems] = useState([]);
+            const videoRefs = useRef({});
+            const collageContainerRef = useRef(null);
+
+            useEffect(() => {
+                const getMediaDimensions = async () => {
+                    const promises = selectedItems.map(item => {
+                        return new Promise((resolve, reject) => {
+                            if (item.type === 'photo') {
+                                const img = new Image();
+                                img.onload = () => resolve({ ...item, aspectRatio: img.naturalWidth / img.naturalHeight });
+                                img.onerror = reject;
+                                img.src = item.displaySrc;
+                            } else { // video
+                                const video = document.createElement('video');
+                                video.onloadedmetadata = () => resolve({ ...item, aspectRatio: video.videoWidth / video.videoHeight });
+                                video.onerror = reject;
+                                video.src = item.videoSrc;
+                            }
+                        });
+                    });
+
+                    try {
+                        const itemsWithDims = await Promise.all(promises);
+                        setLayoutItems(itemsWithDims);
+                    } catch (error) { 
+                        console.error("Error loading media dimensions for layout", error);
+                        setLayoutItems(selectedItems.map(i => ({...i, aspectRatio: 1.5})));
+                    }
+                };
+                if (selectedItems.length > 0) getMediaDimensions();
+                else setLayoutItems([]);
+            }, [selectedItems]);
+
+			useEffect(() => {
+				Object.values(videoRefs.current).forEach(videoElement => {
+                    if (videoElement) {
+                        const isAudible = videoElement.id === audibleVideoId;
+                        videoElement.muted = !isAudible;
+                        if(isAudible) {
+                             videoElement.play().catch(console.error);
+                        }
+                    }
+                });
+			}, [audibleVideoId]);
+
+            useEffect(() => {
+                const container = collageContainerRef.current;
+                if (!container) return;
+
+                const allVideos = container.querySelectorAll('video');
+
+                if (isPaused) {
+                    allVideos.forEach(video => video.pause());
+                    return;
+                }
+                
+                if (isModalOpen) {
+                    allVideos.forEach(video => {
+                        const isVideoInModal = video.closest('.modal-overlay');
+                        if (!isVideoInModal) {
+                            video.pause();
+                        } else {
+                            video.play().catch(e => console.log("Modal video play failed", e));
+                        }
+                    });
+                } else {
+                    allVideos.forEach(video => {
+                        video.play().catch(e => console.log("Resume/initial play failed, probably fine.", e));
+                    });
+                }
+            }, [isModalOpen, isPaused, layoutItems]);
+
+
+			const handleMediaClick = (e, item) => {
+                e.stopPropagation();
+				if (item.type === 'video') {
+					setAudibleVideoId(prevId => (prevId === item.id ? null : item.id));
+				}
+			};
+
+            const handleControlsToggle = (e, itemId) => {
+                e.stopPropagation();
+                setControlsVisibleId(prevId => (prevId === itemId ? null : itemId));
+            };
+            
+            const RemoveButton = ({ onClick, item }) => (
+                <button 
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        onClick(item);
+                    }} 
+                    className="absolute top-2 left-2 bg-black bg-opacity-60 rounded-full p-1 z-20 text-white hover:bg-red-500 transition-colors"
+                    title="Remove from collage"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            );
+
+            const renderCollageGrid = () => (
+                <div 
+                    className="flex flex-wrap gap-2"
+                    onClick={() => {
+                        setAudibleVideoId(null);
+                        setControlsVisibleId(null);
+                    }}
+                >
+                    {layoutItems.map(item => {
+                        const style = { flexGrow: item.aspectRatio, flexBasis: `calc(${item.aspectRatio} * 240px)` };
+                        return (
+                            <div
+                                key={item.id}
+                                style={style}
+                                className="relative rounded-lg shadow-md group"
+                                onClick={(e) => handleMediaClick(e, item)}
+                            >
+                                {item.type === 'photo' ? (
+                                    <div className="relative">
+                                        <RemoveButton onClick={onRemoveItem} item={item} />
+                                        <img src={item.displaySrc} alt={item.name} className="w-full h-auto block rounded-lg cursor-pointer" />
+                                    </div>
+                                ) : (
+                                    <div className="relative">
+                                        <RemoveButton onClick={onRemoveItem} item={item} />
+                                        <video 
+                                            ref={el => videoRefs.current[item.id] = el}
+                                            id={item.id}
+                                            src={item.videoSrc} 
+                                            autoPlay 
+                                            loop 
+                                            muted
+                                            playsInline 
+                                            className="w-full h-auto block rounded-lg cursor-pointer"
+                                            controls={controlsVisibleId === item.id}
+                                        />
+                                        <div className="absolute top-2 right-2 flex flex-col space-y-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                             <button onClick={(e) => handleMediaClick(e, item)} className="bg-black bg-opacity-50 rounded-full p-1.5 z-10">
+                                                <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${audibleVideoId === item.id ? 'text-blue-400' : 'text-white'}`} viewBox="0 0 24 24" fill={audibleVideoId === item.id ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5">
+													<path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.108 12 5v14c0 .892-1.077 1.337-1.707.707L5.586 15z" />
+												</svg>
+                                             </button>
+                                             <button onClick={(e) => handleControlsToggle(e, item.id)} className="bg-black bg-opacity-50 rounded-full p-1.5 z-10">
+                                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.096 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                             </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )
+                    })}
+                </div>
+            );
+            
+			return (
+                <div ref={collageContainerRef}>
+                    <div className="w-full max-w-6xl p-4 bg-gray-800 rounded-2xl shadow-lg border border-gray-700">
+                        <h2 className="text-2xl font-semibold text-gray-200 mb-4">
+                            Your Media Collage
+                        </h2>
+                        <div className="flex space-x-4 mb-4">
+                            <button onClick={onBack} className="tab-button bg-gray-600 text-gray-200 hover:bg-gray-500">
+                                &larr; Back & Clear
+                            </button>
+                            <button onClick={onAddMore} className="tab-button bg-green-600 text-white hover:bg-green-500">
+                                Add More Media
+                            </button>
+                            {selectedItems.length > 0 && (
+                                <button
+                                    onClick={() => setIsModalOpen(true)}
+                                    className="tab-button bg-blue-600 text-white hover:bg-blue-500"
+                                >
+                                    View Fullscreen
+                                </button>
+                            )}
+                        </div>
+
+                        <div className="mt-4 p-4 border border-gray-700 rounded-xl shadow-inner bg-gray-900">
+                            {layoutItems.length > 0 ? (
+                                renderCollageGrid()
+                            ) : (
+                                <div className="text-center py-12 text-gray-500">
+                                    <p>No items in collage.</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {isModalOpen && (
+                        <div className="modal-overlay" onClick={() => setIsModalOpen(false)}>
+                            <div className="modal-content w-full h-full" onClick={(e) => e.stopPropagation()}>
+                                <button className="modal-close" onClick={() => setIsModalOpen(false)}>&times;</button>
+                                {renderCollageGrid()}
+                            </div>
+                        </div>
+                    )}
+                </div>
+			);
+		};
+
+        const VideoPlayerModal = ({ video, onClose }) => {
+            const videoRef = useRef(null);
+            const [volume, setVolume] = useState(1);
+            const [showVolumeIndicator, setShowVolumeIndicator] = useState(false);
+            const volumeTimeoutRef = useRef(null);
+
+            const displayVolumeIndicator = useCallback(() => {
+                if (volumeTimeoutRef.current) {
+                    clearTimeout(volumeTimeoutRef.current);
+                }
+                setShowVolumeIndicator(true);
+                volumeTimeoutRef.current = setTimeout(() => {
+                    setShowVolumeIndicator(false);
+                }, 1500);
+            }, []);
+
+            useEffect(() => {
+                const handleKeyDown = (event) => {
+                    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+                        return;
+                    }
+                    event.preventDefault();
+
+                    const videoElement = videoRef.current;
+                    if (!videoElement) return;
+
+                    let newVolume = videoElement.volume;
+                    if (event.key === 'ArrowUp') {
+                        newVolume = Math.min(1, videoElement.volume + 0.1);
+                    } else {
+                        newVolume = Math.max(0, videoElement.volume - 0.1);
+                    }
+
+                    if (newVolume.toFixed(2) !== videoElement.volume.toFixed(2)) {
+                        videoElement.volume = newVolume;
+                        setVolume(newVolume);
+                        displayVolumeIndicator();
+                    }
+                };
+
+                window.addEventListener('keydown', handleKeyDown);
+
+                return () => {
+                    window.removeEventListener('keydown', handleKeyDown);
+                    if (volumeTimeoutRef.current) {
+                        clearTimeout(volumeTimeoutRef.current);
+                    }
+                };
+            }, [displayVolumeIndicator]);
+
+            useEffect(() => {
+                const videoElement = videoRef.current;
+                if (videoElement) {
+                    videoElement.volume = volume;
+                    videoElement.play().catch(error => {
+                        console.error("Modal autoplay failed on mount:", error);
+                    });
+                }
+            }, [video, volume]);
+            
+            const handleCanPlay = (event) => {
+                event.target.play().catch(error => {
+                    console.error("Modal autoplay failed on canplay:", error);
+                });
+            };
+
+            return (
+                <div className="modal-overlay" onClick={onClose}>
+                    <div className="modal-content rounded-lg max-w-[95%] max-h-[95%]" onClick={(e) => e.stopPropagation()}>
+                        <button className="modal-close" onClick={onClose}>&times;</button>
+                        <h3 className="text-xl font-bold mb-4 text-gray-200">{video.name}</h3>
+                        
+                        {showVolumeIndicator && (
+                             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black bg-opacity-70 text-white px-4 py-2 rounded-lg z-20 pointer-events-none transition-opacity duration-300">
+                                Volume: {Math.round(volume * 100)}%
+                            </div>
+                        )}
+
+                        <video 
+                            ref={videoRef} 
+                            src={video.videoSrc} 
+                            controls 
+                            autoPlay 
+                            loop 
+                            onCanPlay={handleCanPlay}
+                            className="max-w-full max-h-[80vh] block mx-auto rounded-lg"
+                        >
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                </div>
+            );
+        };
+
+
+		const App = () => {
+			const [photos, setPhotos] = useState([]);
+			const [videos, setVideos] = useState([]);
+			const [selectedItems, setSelectedItems] = useState([]);
+			const [currentPage, setCurrentPage] = useState('home');
+			const [isLoading, setIsLoading] = useState(false);
+            const [loadingStatus, setLoadingStatus] = useState('');
+			const [error, setError] = useState(null);
+			const [showVideoModal, setShowVideoModal] = useState(false);
+			const [currentPlayingVideo, setCurrentPlayingVideo] = useState(null);
+			const [activeMediaType, setActiveMediaType] = useState('photos');
+            const [showScroll, setShowScroll] = useState(false);
+            const thumbnailTimePercent = 10;
+
+			const dropZoneRef = useRef(null);
+            const fileInputRef = useRef(null);
+            const folderInputRef = useRef(null); // Ref for folder selection input
+
+			const readFileAsDataURL = useCallback((file) => {
+				return new Promise((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onloadend = () => reader.result ? resolve(reader.result) : reject(new Error("Failed to read file."));
+					reader.onerror = (e) => reject(e);
+					reader.readAsDataURL(file);
+				});
+			}, []);
+
+			const checkScrollTop = () => {
+				setShowScroll(window.pageYOffset > 400);
+			};
+
+			const scrollTop = () =>{
+				window.scrollTo({top: 0, behavior: 'smooth'});
+			};
+            
+            const handleReset = () => {
+                setPhotos([]);
+                setVideos([]);
+                setSelectedItems([]);
+                setError(null);
+                setCurrentPage('home');
+                setActiveMediaType('photos');
+            }
+            
+            const handleBackFromCollage = useCallback(() => {
+                setCurrentPage('home');
+                setSelectedItems([]);
+            }, []);
+            
+            const handleAddMore = useCallback(() => {
+                setCurrentPage('home');
+            }, []);
+
+            const handleRemoveItemFromCollage = useCallback((itemToRemove) => {
+                setSelectedItems(prev => prev.filter(item => item.id !== itemToRemove.id));
+            }, []);
+            
+            useEffect(() => {
+				window.addEventListener('scroll', checkScrollTop);
+                return () => window.removeEventListener('scroll', checkScrollTop);
+            }, []);
+
+            const getVideoThumbnail = useCallback((file, percent) => {
+                return new Promise((resolve) => {
+                    const video = document.createElement('video');
+                    video.crossOrigin = "anonymous";
+                    const url = URL.createObjectURL(file);
+
+                    const cleanup = () => {
+                        video.removeEventListener('loadedmetadata', handleMetadata);
+                        video.removeEventListener('seeked', handleSeeked);
+                        video.removeEventListener('error', handleError);
+                        if(document.body.contains(video)) {
+                            document.body.removeChild(video);
+                        }
+                        URL.revokeObjectURL(url);
+                    };
+
+                    const handleSeeked = () => {
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = video.videoWidth;
+                            canvas.height = video.videoHeight;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                            resolve(canvas.toDataURL('image/jpeg'));
+                        } catch(e) {
+                            console.error("Error generating thumbnail", e);
+                            resolve(null);
+                        } finally {
+                            cleanup();
+                        }
+                    };
+                    
+                    const handleMetadata = () => {
+                        if (video.duration > 0) {
+                             video.addEventListener('seeked', handleSeeked);
+                             const seekTime = video.duration * (percent / 100);
+                             video.currentTime = Math.min(Math.max(0, seekTime), video.duration - 0.1);
+                        } else {
+                           resolve(null);
+                           cleanup();
+                        }
+                    };
+
+                    const handleError = () => {
+                        console.error("Error loading video for thumbnail:", file.name);
+						resolve(null);
+						cleanup();
+					};
+
+                    video.addEventListener('loadedmetadata', handleMetadata);
+                    video.addEventListener('error', handleError);
+                    video.style.display = 'none';
+                    document.body.appendChild(video);
+                    video.src = url;
+                });
+            }, []);
+            
+            const processFiles = useCallback(async (files) => {
+                if (!files || files.length === 0) return;
+                setIsLoading(true);
+                setLoadingStatus('Processing files...');
+                setError(null);
+
+                const photoFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+                const videoFiles = Array.from(files).filter(f => f.type.startsWith('video/'));
+                
+                let newPhotos = [], newVideos = [];
+
+                if (photoFiles.length > 0) {
+                    setLoadingStatus('Processing photos...')
+                    const photoPromises = photoFiles.map(async (file) => {
+                         const dataUrl = await readFileAsDataURL(file);
+                         return { id: crypto.randomUUID(), name: file.name, displaySrc: dataUrl, type: 'photo' };
+                    });
+                    newPhotos = (await Promise.all(photoPromises));
+                }
+
+                if (videoFiles.length > 0) {
+                    let videoCounter = 0;
+                    for (const file of videoFiles) {
+                        videoCounter++;
+                        setLoadingStatus(`Processing video ${videoCounter} of ${videoFiles.length}...`);
+                        try {
+                            const videoSrc = URL.createObjectURL(file);
+                            const thumbnailSrc = await getVideoThumbnail(file, thumbnailTimePercent);
+                            newVideos.push({ id: crypto.randomUUID(), name: file.name, videoSrc, displaySrc: thumbnailSrc, type: 'video' });
+                        } catch (err) {
+                            console.error(`Error processing video ${file.name}:`, err);
+                        }
+                    }
+                }
+
+                setPhotos(prev => [...prev, ...newPhotos]);
+                setVideos(prev => [...prev, ...newVideos]);
+                setIsLoading(false);
+                setLoadingStatus('');
+                
+                if (newPhotos.length > 0 && photos.length === 0) setActiveMediaType('photos');
+                else if (newVideos.length > 0 && videos.length === 0) setActiveMediaType('videos');
+
+                if (newPhotos.length === 0 && newVideos.length === 0) {
+                    setError("No supported image or video files were found.");
+                }
+            }, [readFileAsDataURL, getVideoThumbnail, thumbnailTimePercent, photos.length, videos.length]);
+
+            const handleFileSelectClick = () => {
+                fileInputRef.current.click();
+            };
+
+            const handleFolderSelectClick = () => {
+                folderInputRef.current.click();
+            };
+
+            const handleFileInputChange = (e) => {
+                if (e.target.files) {
+                    processFiles(e.target.files);
+                    e.target.value = null; // Clear the input value to allow selecting the same file/folder again
+                }
+            };
+
+			useEffect(() => {
+				const dropZone = dropZoneRef.current;
+				if (!dropZone) return;
+
+				const preventDefaults = (e) => { e.preventDefault(); e.stopPropagation(); };
+				const highlight = () => dropZone.classList.add('border-blue-500', 'bg-gray-800');
+				const unhighlight = () => dropZone.classList.remove('border-blue-500', 'bg-gray-800');
+
+				const handleDrop = async (e) => {
+					preventDefaults(e);
+					unhighlight();
+					
+					const filesToProcess = [];
+                    const items = e.dataTransfer.items;
+
+					if (items && items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+                        const traverseFileTree = async (entry) => {
+                            if (!entry) return;
+                            if (entry.isFile) {
+                                const file = await new Promise((resolve) => entry.file(resolve));
+                                if (file) filesToProcess.push(file);
+                            } else if (entry.isDirectory) {
+                                const dirReader = entry.createReader();
+                                const readAllEntries = async (directoryReader) => {
+                                    const entries = await new Promise(resolve => directoryReader.readEntries(resolve));
+                                    if (entries.length === 0) return;
+                                    await Promise.all(entries.map(e => traverseFileTree(e)));
+                                    await readAllEntries(directoryReader);
+                                }
+                                await readAllEntries(dirReader);
+                            }
+                        };
+                        const promises = Array.from(items).map(item => traverseFileTree(item.webkitGetAsEntry()));
+                        await Promise.all(promises);
+                        processFiles(filesToProcess);
+                    } else if (e.dataTransfer.files) {
+                        processFiles(e.dataTransfer.files);
+                    } else {
+                        setError("Could not read dropped items. Your browser might be too old.");
+                    }
+				};
+
+				dropZone.addEventListener('dragover', preventDefaults);
+				dropZone.addEventListener('dragenter', highlight);
+				dropZone.addEventListener('dragleave', unhighlight);
+				dropZone.addEventListener('drop', handleDrop);
+
+				return () => {
+					dropZone.removeEventListener('dragover', preventDefaults);
+					dropZone.removeEventListener('dragenter', highlight);
+					dropZone.removeEventListener('dragleave', unhighlight);
+					dropZone.removeEventListener('drop', handleDrop);
+				};
+			}, [processFiles]);
+
+			const handleSelectMedia = useCallback((mediaItem) => {
+				setSelectedItems(prev => prev.some(item => item.id === mediaItem.id) ? prev.filter(item => item.id !== mediaItem.id) : [...prev, mediaItem]);
+			}, []);
+
+			const handlePlayVideoInModal = useCallback((videoItem) => {
+				setCurrentPlayingVideo(videoItem);
+				setShowVideoModal(true);
+			}, []);
+
+			useEffect(() => {
+				return () => { videos.forEach(v => URL.revokeObjectURL(v.videoSrc)); };
+			}, [videos]);
+
+			const hasMedia = photos.length > 0 || videos.length > 0;
+
+            const renderCreateCollageButton = () => (
+                <div className="flex justify-center my-4">
+                    <button onClick={() => setCurrentPage('collage')} disabled={selectedItems.length === 0} className={`px-8 py-4 rounded-xl font-semibold text-lg transition-all duration-200 ease-in-out ${selectedItems.length === 0 ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-indigo-700 text-white shadow-lg hover:from-blue-700 hover:to-indigo-800 transform hover:scale-105'}`}>
+                        Create & View Collage ({selectedItems.length} selected)
+                    </button>
+                </div>
+            );
+
+			return (
+				<div className="min-h-screen bg-gray-900 p-4 font-sans text-gray-300 flex flex-col items-center">
+                    <input type="file" ref={fileInputRef} onChange={handleFileInputChange} className="hidden" multiple />
+                    <input type="file" ref={folderInputRef} onChange={handleFileInputChange} className="hidden" webkitdirectory="" />
+
+					<div className="flex items-center justify-center mb-6 mt-4">
+						<h1 className="text-4xl font-extrabold text-blue-400 drop-shadow-md">
+							Roostr
+						</h1>
+						<img src="https://dsnyder.cloud/roostr/logo.png" alt="Roostr Logo" className="w-12 h-12 ml-3" />
+					</div>
+
+					{error && <div className="bg-red-900/50 border border-red-500 text-red-300 px-4 py-3 rounded-md relative mb-4 w-full max-w-6xl" role="alert">{error}</div>}
+
+					{currentPage === 'home' ? (
+						<>
+							{!hasMedia && !isLoading && (
+								<div ref={dropZoneRef} className="w-full max-w-6xl border-4 border-dashed border-gray-600 rounded-2xl p-12 text-center text-gray-400 text-lg transition-all duration-200 ease-in-out mb-8 flex flex-col items-center justify-center min-h-[200px] hover:border-blue-500 hover:bg-gray-800">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="w-16 h-16 mb-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                                    <div>
+                                        <p>Drag & Drop Folders or Files</p>
+                                        <p className="text-lg my-2">or</p>
+                                        <div className="flex space-x-4 justify-center">
+                                            <button onClick={handleFileSelectClick} className="tab-button bg-blue-600 text-white hover:bg-blue-500">Select Files</button>
+                                            <button onClick={handleFolderSelectClick} className="tab-button bg-blue-600 text-white hover:bg-blue-500">Select Folder</button>
+                                        </div>
+                                    </div>
+								</div>
+							)}
+                            {isLoading && (
+                                <div className="flex flex-col items-center mb-4">
+                                    <div className="spinner"></div>
+                                    <p className="text-gray-400 mt-2">{loadingStatus}</p>
+                                </div>
+                            )}
+
+							{hasMedia && (
+								<>
+									<div className="w-full max-w-6xl flex justify-center items-center mb-4 space-x-2">
+										<button onClick={() => setActiveMediaType('photos')} className={`tab-button ${activeMediaType === 'photos' ? 'active' : ''}`}>Photos ({photos.length})</button>
+										<button onClick={() => setActiveMediaType('videos')} className={`tab-button ${activeMediaType === 'videos' ? 'active' : ''}`}>Videos ({videos.length})</button>
+                                        <button onClick={handleFileSelectClick} className="tab-button bg-green-600 text-white hover:bg-green-500">Add Files</button>
+                                        <button onClick={handleFolderSelectClick} className="tab-button bg-green-600 text-white hover:bg-green-500">Add Folder</button>
+                                        <button onClick={handleReset} className="tab-button bg-red-600 text-white hover:bg-red-500">Reset</button>
+									</div>
+
+                                    {renderCreateCollageButton()}
+
+									<div className="w-full max-w-6xl">
+										{activeMediaType === 'photos' && photos.length > 0 && (
+											<div className="media-grid">
+												{photos.map(photo => (
+													<div key={photo.id} className={`media-item ${selectedItems.some(item => item.id === photo.id) ? 'selected' : ''}`} onClick={() => handleSelectMedia(photo)}>
+														<img src={photo.displaySrc} alt={photo.name} />
+														<div className="file-name">{photo.name}</div>
+													</div>
+												))}
+											</div>
+										)}
+
+										{activeMediaType === 'videos' && videos.length > 0 && (
+											<div className="media-grid">
+												{videos.map(video => (
+													<div key={video.id} className={`media-item ${selectedItems.some(item => item.id === video.id) ? 'selected' : ''}`} onClick={() => handleSelectMedia(video)}>
+                                                        <img src={video.displaySrc ? video.displaySrc : 'https://placehold.co/180x180/1f2937/4b5563?text=No+Preview'} alt={video.name} />
+														<div className="play-icon" onClick={(e) => { e.stopPropagation(); handlePlayVideoInModal(video); }}>
+															<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8 text-white"><path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12Zm14.024-.828a.75.75 0 0 0 0-1.344l-5.602-3.219A.75.75 0 0 0 9 7.5v9a.75.75 0 0 0 1.178.625l5.602-3.219Z" clipRule="evenodd" /></svg>
+														</div>
+														<div className="file-name">{video.name}</div>
+													</div>
+												))}
+											</div>
+										)}
+										
+                                        {renderCreateCollageButton()}
+									</div>
+								</>
+							)}
+						</>
+					) : (
+						<CollageDisplay 
+                            selectedItems={selectedItems} 
+                            onBack={handleBackFromCollage} 
+                            onAddMore={handleAddMore}
+                            onRemoveItem={handleRemoveItemFromCollage}
+                            isPaused={showVideoModal}
+                        />
+					)}
+
+                    {showScroll && (
+                        <button onClick={scrollTop} className="fixed bottom-8 right-8 bg-blue-600 text-white w-12 h-12 rounded-full shadow-lg flex items-center justify-center text-2xl hover:bg-blue-500 transition-all">
+                            &uarr;
+                        </button>
+                    )}
+
+					{showVideoModal && (
+                        <VideoPlayerModal 
+                            video={currentPlayingVideo} 
+                            onClose={() => setShowVideoModal(false)} 
+                        />
+                    )}
+				</div>
+			);
+		};
+
+		const root = ReactDOM.createRoot(document.getElementById('root'));
+		root.render(<App />);
+	</script>
+</body>
+</html>
